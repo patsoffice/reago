@@ -67,10 +67,6 @@ type RackspaceEmailAliasShow struct {
 	EmailAddressList EmailAddress `json:"emailAddressList"`
 }
 
-// type rackspaceEmailAliasRoot struct {
-// 	RackspaceEmailAlias *RackspaceEmailAlias `json:"alias"`
-// }
-
 type rackspaceEmailAliasesRoot struct {
 	Offset                int                   `struct:"offset"`
 	Size                  int                   `struct:"size"`

@@ -38,15 +38,20 @@ import (
 	"time"
 
 	"github.com/google/go-querystring/query"
+	"golang.org/x/time/rate"
 )
 
 const (
-	libraryVersion  = "1.0"
-	apiVersion      = "v1"
-	defaultBaseURL  = "https://api.emailsrvr.com/"
-	userAgent       = "reago/" + libraryVersion
-	mediaType       = "application/json"
-	defaultPageSize = 50
+	libraryVersion            = "1.0"
+	apiVersion                = "v1"
+	defaultBaseURL            = "https://api.emailsrvr.com/"
+	userAgent                 = "reago/" + libraryVersion
+	mediaType                 = "application/json"
+	defaultPageSize           = 50
+	defaultGetLimit           = 1.9
+	defaultGetBurst           = 1
+	defaultPutPostDeleteLimit = 1.4
+	defaultPutPostDeleteBurst = 1
 )
 
 // Client manages communication with Rackspace Email v1 API
@@ -68,6 +73,9 @@ type Client struct {
 	Domains               DomainsService
 
 	debugHTTP bool
+
+	getLimiter           *rate.Limiter
+	putPostDeleteLimiter *rate.Limiter
 }
 
 // PageOptions specifies the request pagination options
@@ -87,6 +95,9 @@ func NewClient(httpClient *http.Client) *Client {
 	c := &Client{client: httpClient, BaseURL: baseURL, UserAgent: userAgent}
 	c.RackspaceEmailAliases = &RackspaceEmailAliasesServiceOp{client: c}
 	c.Domains = &DomainsServiceOp{client: c}
+
+	c.getLimiter = rate.NewLimiter(rate.Limit(defaultGetLimit), defaultGetBurst)
+	c.putPostDeleteLimiter = rate.NewLimiter(rate.Limit(defaultPutPostDeleteLimit), defaultPutPostDeleteBurst)
 
 	return c
 }
@@ -193,6 +204,26 @@ func SetDebugHTTP() func(*Client) error {
 	}
 }
 
+// SetGetLimiter is a client option for setting the ratelimiter for GET
+// requests. rps is the requests per second and burst is the number of
+// burst requests allowed.
+func SetGetLimiter(rps float64, burst int) func(*Client) error {
+	return func(c *Client) error {
+		c.getLimiter = rate.NewLimiter(rate.Limit(rps), burst)
+		return nil
+	}
+}
+
+// SetPostLimiter is a client option for setting the ratelimiter for POST
+// requests. rps is the requests per second and burst is the number of
+// burst requests allowed.
+func SetPostLimiter(rps float64, burst int) func(*Client) error {
+	return func(c *Client) error {
+		c.putPostDeleteLimiter = rate.NewLimiter(rate.Limit(rps), burst)
+		return nil
+	}
+}
+
 // NewRequest creates an API request. A relative URL can be provided in
 // urlStr, which will be resolved to the BaseURL of the Client. Relative URLs
 // should always be specified without a preceding slash. If specified, the
@@ -259,6 +290,18 @@ func (c *Client) Do(ctx context.Context, req *http.Request, v interface{}) (*Res
 		fmt.Fprintf(os.Stderr, "Req: %s\n", string(dump))
 	}
 
+	// Rate limiting
+	switch req.Method {
+	case "GET":
+		if err := c.getLimiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	default:
+		if err := c.putPostDeleteLimiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	resp, err := DoRequestWithClient(ctx, c.client, req)
 	if err != nil {
 		return nil, err
@@ -280,7 +323,6 @@ func (c *Client) Do(ctx context.Context, req *http.Request, v interface{}) (*Res
 	}
 
 	response := newResponse(resp)
-	// c.Rate = response.Rate
 
 	err = CheckResponse(resp)
 	if err != nil {
